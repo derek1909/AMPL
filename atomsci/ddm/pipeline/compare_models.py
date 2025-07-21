@@ -933,6 +933,8 @@ def get_filesystem_perf_results(result_dir, pred_type='classification', expand=T
     model_score_type_list = []
     feature_transform_type_list = []
     weight_transform_type_list = []
+    weight_decay_penalty_type_list = []
+    batch_size_list = []
 
     # model type specific lists
     param_list = []
@@ -1019,6 +1021,14 @@ def get_filesystem_perf_results(result_dir, pred_type='classification', expand=T
         dataset_key_list.append(metadata_dict['training_dataset']['dataset_key'])
         feature_transform_type = metadata_dict['training_dataset']['feature_transform_type']
         feature_transform_type_list.append(feature_transform_type)
+
+        ##Adding for our UCL work:
+        nn_params = metadata_dict['nn_specific']
+        weight_decay_penalty_type = nn_params['weight_decay_penalty_type']
+        weight_decay_penalty_type_list.append(weight_decay_penalty_type)
+        batch_size = nn_params['batch_size']
+        batch_size_list.append(batch_size)
+
         try:
             weight_transform_type_list.append(metadata_dict['training_dataset']['weight_transform_type'])
         except Exception:
@@ -1047,7 +1057,9 @@ def get_filesystem_perf_results(result_dir, pred_type='classification', expand=T
                     split_uuid=split_uuid_list,
                     model_score_type=model_score_type_list,
                     feature_transform_type=feature_transform_type_list,
-                    weight_transform_type=weight_transform_type_list))
+                    weight_transform_type=weight_transform_type_list,
+                    weight_decay_penalty_type=weight_decay_penalty_type_list,
+                    batch_size=batch_size_list))
 
     perf_df['model_choice_score'] = score_dict['valid']['model_choice_score']
     for subset in subsets:

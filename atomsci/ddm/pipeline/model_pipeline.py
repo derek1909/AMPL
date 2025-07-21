@@ -594,7 +594,7 @@ class ModelPipeline:
         if not self.params.split_only:
             self.model_wrapper = model_wrapper.create_model_wrapper(self.params, self.featurization, self.ds_client)
             self.model_wrapper.setup_model_dirs()
-
+        print("self.load_featurize_data being called")
         self.load_featurize_data()
 
         ## return if split only

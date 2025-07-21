@@ -1419,6 +1419,9 @@ class SimpleRegressionPerfData(RegressionPerfData):
             nzrows = np.where(weights[:,i] != 0)[0]
             task_real_vals = np.squeeze(real_vals[nzrows,i])
             task_pred_vals = np.squeeze(pred_vals[nzrows,i])
+            print(task_real_vals.shape, "\t", np.isnan(task_real_vals).any())
+            print(task_pred_vals.shape, "\t", np.isnan(task_pred_vals).any(), '\t', np.isnan(task_pred_vals).sum())
+            print(task_pred_vals[0:10])
             scores.append(r2_score(task_real_vals, task_pred_vals))
         self.perf_metrics.append(np.array(scores))
         return float(np.mean(scores))

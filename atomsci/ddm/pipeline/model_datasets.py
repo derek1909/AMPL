@@ -370,10 +370,13 @@ class ModelDataset(object):
                 attr: A pd.dataframe containing the compound ids and smiles
                 untranfsormed_dataset: A NumpyDataset containing untransformed data
         """
+
+        print("params.previously_featurized: ", params.previously_featurized)
         
         if params is None:
             params = self.params
         if params.previously_featurized:
+            print("entering if statement")
             try:
                 self.log.debug("Attempting to load featurized dataset")
                 featurized_dset_df = self.load_featurized_data()
@@ -402,6 +405,7 @@ class ModelDataset(object):
             except AssertionError as a:
                 raise a
             except Exception as e:
+                print(e)
                 self.log.debug("Exception when trying to load featurized data:\n%s" % str(e))
                 self.log.info("Featurized dataset not previously saved for dataset %s, creating new" % self.dataset_name)
                 pass

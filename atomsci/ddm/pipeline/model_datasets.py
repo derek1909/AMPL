@@ -1444,22 +1444,51 @@ class FileDataset(ModelDataset):
 
     # ****************************************************************************************
     def load_dataset_split_table(self, directory=None):
-        """Loads from the filesystem a table of compound IDs assigned to each split subset of a dataset.
-        Called by load_presplit_dataset().
-
+        """Load a split table based on UUID.
+        
+        This function finds and loads a CSV file containing dataset split information
+        based on the split_uuid parameter by searching for any CSV files that contain
+        the UUID in their filename.
+        
         Args:
-            directory (str): Directory where the split table will be created. Defaults to the directory
-            of the current dataset.
-
+            directory (str): Directory where the split table is stored. Defaults to the directory
+                            of the current dataset.
+                            
         Returns:
-            split_df (DataFrame): Table assigning compound IDs to split subsets and folds.
-            split_kv: None for the FileDataset version of this method.
+            tuple(split_df, split_kv):
+                split_df (DataFrame): Table assigning compound IDs to split subsets and folds.
+                split_kv: None for the FileDataset version of this method.
+                
+        Raises:
+            FileNotFoundError: If no split file containing the UUID can be found.
         """
         if directory is None:
             directory = os.path.dirname(self.params.dataset_key)
-        split_table_file = '{0}/{1}'.format(directory, self._get_split_key())
-        split_df = pd.read_csv(split_table_file, index_col=False)
-        return split_df, None
+        
+        # Search for any CSV file containing the UUID in its filename
+        if hasattr(self.params, 'split_uuid') and self.params.split_uuid:
+            import glob
+            
+            # Find all files containing UUID in their names
+            uuid_files = []
+            for file in glob.glob(os.path.join(directory, "*.csv")):
+                filename = os.path.basename(file)
+                if self.params.split_uuid in filename:
+                    uuid_files.append(file)
+            
+            # If matching files are found, use the first one
+            if uuid_files:
+                # Load the first matching file
+                split_df = pd.read_csv(uuid_files[0], index_col=False)
+                self.log.info(f"Found split file with UUID: {uuid_files[0]}")
+                return split_df, None
+            else:
+                # No matching files found, raise an error
+                raise FileNotFoundError(f"No split file found containing UUID {self.params.split_uuid}")
+        else:
+            raise ValueError("No split_uuid parameter provided")
+            
+        
 
 
 class EmbeddingDataset:

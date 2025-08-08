@@ -1983,6 +1983,8 @@ class EpochManager:
 
         self.wrapper.best_epoch = 0
         self.wrapper.best_valid_score = None
+
+        # Store only metrics for all epochs (lightweight)
         self.wrapper.train_epoch_perfs = np.zeros(params.max_epochs)
         self.wrapper.valid_epoch_perfs = np.zeros(params.max_epochs)
         self.wrapper.test_epoch_perfs = np.zeros(params.max_epochs)
@@ -1990,20 +1992,154 @@ class EpochManager:
         self.wrapper.valid_epoch_perf_stds = np.zeros(params.max_epochs)
         self.wrapper.test_epoch_perf_stds = np.zeros(params.max_epochs)
         self.wrapper.model_choice_scores = np.zeros(params.max_epochs)
+
+        # Early stopping parameters
         self.wrapper.early_stopping_min_improvement = params.early_stopping_min_improvement
         self.wrapper.early_stopping_patience = params.early_stopping_patience
 
+        # Memory optimization: Only store PerfData for a limited window of epochs
+        # Default: keep last 5 epochs and best epoch
+        self.max_stored_epochs = getattr(params, 'max_stored_epochs', 10)
+        self._log.info(f"Memory optimization: Only storing detailed performance data for the last {self.max_stored_epochs} epochs and best epoch")
+        
+        # Initialize PerfData storage - only pre-allocate what we need
         self.wrapper.train_perf_data = []
         self.wrapper.valid_perf_data = []
         self.wrapper.test_perf_data = []
 
-        for _ in range(params.max_epochs):
+        # Preallocate only the number we'll keep
+        for _ in range(min(self.max_stored_epochs, params.max_epochs)):
             self.wrapper.train_perf_data.append(
                 create_perf_data(subset=self._subsets['train'], **kwargs))
             self.wrapper.valid_perf_data.append(
                 create_perf_data(subset=self._subsets['valid'], **kwargs))
             self.wrapper.test_perf_data.append(
                 create_perf_data(subset=self._subsets['test'], **kwargs))
+
+       # Initialize storage for best epoch performance data
+        self.wrapper.best_train_perf_data = None
+        self.wrapper.best_valid_perf_data = None
+        self.wrapper.best_test_perf_data = None
+
+    # ****************************************************************************************
+    # class EpochManager
+    def _get_perf_data_index(self, ei):
+        """Determine which slot to use for a given epoch index
+        
+        Args:
+            ei (int): Epoch index
+            
+        Returns:
+            int: Index to use in the perf_data arrays
+        """
+        # Use modulo to reuse slots
+        return ei % self.max_stored_epochs
+    
+    # ****************************************************************************************
+    # class EpochManager
+    def _ensure_perf_data_available(self, ei, subset):
+        """Ensure performance data object is available for the given epoch
+        
+        Args:
+            ei (int): Epoch index
+            subset (str): Data subset ('train', 'valid', or 'test')
+            
+        Returns:
+            None
+        """
+        perf_data_list = getattr(self.wrapper, f'{subset}_perf_data')
+        idx = self._get_perf_data_index(ei)
+        
+        # If we need to create a new slot
+        if idx >= len(perf_data_list):
+            # Create a new PerfData object
+            perf_data_list.append(self._perf_data_factories[subset]())
+            self._log.debug(f"Created new PerfData object for {subset} at index {idx}")
+        
+        # If we're reusing a slot, completely reset it
+        else:
+            self._reset_perf_data(perf_data_list[idx], subset, idx, ei)
+
+    def _reset_perf_data(self, perf_data_obj, subset, idx, ei):
+        """Completely reset a PerfData object for reuse in circular buffer
+        
+        Args:
+            perf_data_obj: The PerfData object to reset
+            subset (str): Data subset ('train', 'valid', or 'test')
+            idx (int): Index in the circular buffer
+            ei (int): Current epoch index
+        """
+        self._log.debug(f"Resetting {subset} PerfData at index {idx} for epoch {ei}")
+        
+        # Clear all accumulated data
+        if hasattr(perf_data_obj, 'perf_metrics'):
+            perf_data_obj.perf_metrics.clear()  # Clear the list instead of reassigning
+            
+        if hasattr(perf_data_obj, 'pred_vals'):
+            if isinstance(perf_data_obj.pred_vals, dict):
+                # For K-fold: reset each ID's prediction array
+                for id_key in perf_data_obj.pred_vals:
+                    if hasattr(perf_data_obj.pred_vals[id_key], 'shape'):
+                        # Reset to empty array with correct shape
+                        if len(perf_data_obj.pred_vals[id_key].shape) == 2:
+                            # Regression: (0, num_tasks)
+                            perf_data_obj.pred_vals[id_key] = np.empty((0, perf_data_obj.num_tasks), dtype=np.float32)
+                        elif len(perf_data_obj.pred_vals[id_key].shape) == 3:
+                            # Classification: (0, num_tasks, num_classes)
+                            perf_data_obj.pred_vals[id_key] = np.empty((0, perf_data_obj.num_tasks, perf_data_obj.num_classes), dtype=np.float32)
+            else:
+                # For Simple: just set to None
+                perf_data_obj.pred_vals = None
+                
+        if hasattr(perf_data_obj, 'pred_stds'):
+            perf_data_obj.pred_stds = None
+            
+        if hasattr(perf_data_obj, 'model_score'):
+            perf_data_obj.model_score = None
+            
+        if hasattr(perf_data_obj, 'folds'):
+            perf_data_obj.folds = 0
+            
+        # Force garbage collection of any large numpy arrays
+        import gc
+        gc.collect()
+        
+        self._log.debug(f"Successfully reset {subset} PerfData - perf_metrics length: {len(perf_data_obj.perf_metrics)}")
+
+    def _save_best_epoch_data(self, best_idx):
+        """Save a deep copy of the current best epoch's performance data
+        
+        This prevents the best epoch data from being overwritten when the circular
+        buffer reuses slots for new epochs.
+        """
+        import copy
+        
+        # Get the current performance data objects
+        train_perf = self.wrapper.train_perf_data[best_idx]
+        valid_perf = self.wrapper.valid_perf_data[best_idx]
+        test_perf = self.wrapper.test_perf_data[best_idx]
+        
+        # Deep copy the performance data to preserve it
+        self.wrapper.best_train_perf_data = copy.deepcopy(train_perf)
+        self.wrapper.best_valid_perf_data = copy.deepcopy(valid_perf)
+        self.wrapper.best_test_perf_data = copy.deepcopy(test_perf)
+        
+        # # Ensure perf_metrics are preserved - this is critical for compute_perf_metrics()
+        # # If perf_metrics is empty, we need to reconstruct it or ensure it's available
+        # if hasattr(train_perf, 'perf_metrics') and len(train_perf.perf_metrics) > 0:
+        #     self.wrapper.best_train_perf_data.perf_metrics = copy.deepcopy(train_perf.perf_metrics)
+        
+        # if hasattr(valid_perf, 'perf_metrics') and len(valid_perf.perf_metrics) > 0:
+        #     self.wrapper.best_valid_perf_data.perf_metrics = copy.deepcopy(valid_perf.perf_metrics)
+            
+        # if hasattr(test_perf, 'perf_metrics') and len(test_perf.perf_metrics) > 0:
+        #     self.wrapper.best_test_perf_data.perf_metrics = copy.deepcopy(test_perf.perf_metrics)
+        
+        # Log for debugging
+        self._log.debug(f"Saved best epoch data for epoch {self.wrapper.best_epoch}")
+        self._log.debug(f"Train perf_metrics length: {len(self.wrapper.best_train_perf_data.perf_metrics) if hasattr(self.wrapper.best_train_perf_data, 'perf_metrics') else 'N/A'}")
+        self._log.debug(f"Valid perf_metrics length: {len(self.wrapper.best_valid_perf_data.perf_metrics) if hasattr(self.wrapper.best_valid_perf_data, 'perf_metrics') else 'N/A'}")
+        self._log.debug(f"Test perf_metrics length: {len(self.wrapper.best_test_perf_data.perf_metrics) if hasattr(self.wrapper.best_test_perf_data, 'perf_metrics') else 'N/A'}")
 
     # ****************************************************************************************
     # class EpochManager
@@ -2044,9 +2180,14 @@ class EpochManager:
 
         """
         train_perf = self.update(ei, 'train', train_dset)
-        valid_perf = self.update(ei, 'valid', valid_dset)
         test_perf = self.update(ei, 'test', test_dset)
+        valid_perf = self.update(ei, 'valid', valid_dset) # Sawp order to make sure PerfData of testset is calculated!
 
+        # Clean up memory - explicitly delete old PerfData objects
+        if ei > self.max_stored_epochs and ei % 10 == 0:
+            import gc
+            gc.collect()
+            
         return [p for p in [train_perf, valid_perf, test_perf] if p is not None]
 
     # ****************************************************************************************
@@ -2067,8 +2208,17 @@ class EpochManager:
         Returns:
            float: Performance metric for the given dset.
         """
+      # Ensure we have a PerfData object for this epoch
+        self._ensure_perf_data_available(ei, subset)
+        
+        # Get predictions
         pred = self._make_pred(dset)
-        perf = getattr(self.wrapper, f'{subset}_perf_data')[ei].accumulate_preds(pred, dset.ids)
+        
+        # Get the right index in our circular buffer
+        idx = self._get_perf_data_index(ei)
+        
+        # Accumulate predictions and get performance
+        perf = getattr(self.wrapper, f'{subset}_perf_data')[idx].accumulate_preds(pred, dset.ids)
         return perf
 
     # ****************************************************************************************
@@ -2088,8 +2238,9 @@ class EpochManager:
            None
 
         """
+        idx = self._get_perf_data_index(ei)
         getattr(self.wrapper, f'{subset}_epoch_perfs')[ei], _ = \
-            getattr(self.wrapper, f'{subset}_perf_data')[ei].compute_perf_metrics()
+            getattr(self.wrapper, f'{subset}_perf_data')[idx].compute_perf_metrics()
 
     # ****************************************************************************************
     # class EpochManager
@@ -2108,21 +2259,25 @@ class EpochManager:
         Side effects:
            Updates self._should_stop when it's time to exit the training loop.
         """
-        valid_score = self.wrapper.valid_perf_data[ei].model_choice_score(self._model_choice_score_type)
+        idx = self._get_perf_data_index(ei)
+        valid_score = self.wrapper.valid_perf_data[idx].model_choice_score(self._model_choice_score_type)
         self.wrapper.model_choice_scores[ei] = valid_score
+        
+        self._log.debug(" !! update_valid() !!")
         if self.wrapper.best_valid_score is None or self.production:
-            # If we're in production mode, every epoch is the new best epoch
-            self._new_best_valid_score()
+            # First epoch or production mode
             self.wrapper.best_valid_score = valid_score
             self.wrapper.best_epoch = ei
-            self._log.info(f"Total score for epoch {ei} is {valid_score:.3}")
+            self._save_best_epoch_data(idx)
+            self._new_best_valid_score()
         elif valid_score - self.wrapper.best_valid_score > self.wrapper.early_stopping_min_improvement:
-            self._new_best_valid_score()
+            # New best validation score
             self.wrapper.best_valid_score = valid_score
             self.wrapper.best_epoch = ei
-            self._log.info(f"*** Total score for epoch {ei} is {valid_score:.3}, is new maximum")
+            self._save_best_epoch_data(idx)
+            self._new_best_valid_score()
         elif ei - self.wrapper.best_epoch > self.wrapper.early_stopping_patience:
-            self._log.info(f"No improvement after {self.wrapper.early_stopping_patience} epochs, stopping training")
+            # No improvement for patience epochs
             self._should_stop = True
 
     # ****************************************************************************************

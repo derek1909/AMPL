@@ -72,12 +72,12 @@ def get_latest_pytorch_checkpoint(model, model_dir=None):
 
     """
     chkpts = model.get_checkpoints(model_dir)
-    print(chkpts)
+    # print(chkpts)
     if len(chkpts) == 0:
         raise ValueError("No 'best' checkpoint found. deepchem.Model.get_checkpoints() is empty")
     # checkpoint with the highest number is the best one
     latest_chkpt = max(chkpts, key=os.path.getctime)
-    print(latest_chkpt)
+    # print(latest_chkpt)
 
     return latest_chkpt
  
@@ -811,20 +811,18 @@ class NNModelWrapper(ModelWrapper):
         if subset == 'full':
             return self.get_full_dataset_perf_data(self.data)
         if epoch_label == 'best':
-            epoch = self.best_epoch
-            #model_dir = self.best_model_dir
+            if subset == 'train':
+                return self.best_train_perf_data
+            elif subset == 'valid':
+                return self.best_valid_perf_data
+            elif subset == 'test':
+                return self.best_test_perf_data
+            else:
+                raise ValueError("Unknown dataset subset '%s'" % subset)
+
         else:
             raise ValueError("Unknown epoch_label '%s'" % epoch_label)
 
-        if subset == 'train':
-            return self.train_perf_data[epoch]
-        elif subset == 'valid':
-            return self.valid_perf_data[epoch]
-        elif subset == 'test':
-            #return self.get_test_perf_data(model_dir, self.data)
-            return self.test_perf_data[epoch]
-        else:
-            raise ValueError("Unknown dataset subset '%s'" % subset)
 
     # ****************************************************************************************
     def get_pred_results(self, subset, epoch_label=None):
@@ -849,18 +847,17 @@ class NNModelWrapper(ModelWrapper):
         if subset == 'full':
             return self.get_full_dataset_pred_results(self.data)
         if epoch_label == 'best':
-            epoch = self.best_epoch
-            #model_dir = self.best_model_dir
+            if subset == 'train':
+                return self.get_train_valid_pred_results(self.best_train_perf_data)
+            elif subset == 'valid':
+                return self.get_train_valid_pred_results(self.best_valid_perf_data)
+            elif subset == 'test':
+                return self.get_train_valid_pred_results(self.best_test_perf_data)
+            else:
+                raise ValueError("Unknown dataset subset '%s'" % subset)
+
         else:
             raise ValueError("Unknown epoch_label '%s'" % epoch_label)
-        if subset == 'train':
-            return self.get_train_valid_pred_results(self.train_perf_data[epoch])
-        elif subset == 'valid':
-            return self.get_train_valid_pred_results(self.valid_perf_data[epoch])
-        elif subset == 'test':
-            return self.get_train_valid_pred_results(self.test_perf_data[epoch])
-        else:
-            raise ValueError("Unknown dataset subset '%s'" % subset)
 
     # ****************************************************************************************
     def _clean_up_excess_files(self, dest_dir):
@@ -931,6 +928,8 @@ class NNModelWrapper(ModelWrapper):
                 valid_epoch_perfs (np.array): Contains a standard validation set performance metric (r2_score or roc_auc), averaged over folds,
                     at the end of each epoch.
         """
+        self.log.info("Training with k-fold cv....")
+
         # TODO: Fix docstrings above
         num_folds = len(pipeline.data.train_valid_dsets)
         self.data = pipeline.data
@@ -1083,7 +1082,7 @@ class NNModelWrapper(ModelWrapper):
 
         # Only copy the model files we need, not the entire directory
         self._copy_model(self.best_model_dir)
-        self.log.info(f"Best model from epoch {self.best_epoch} saved to {self.best_model_dir}")
+        self.log.info(f"(NN Model) Best model from epoch {self.best_epoch} saved to {self.best_model_dir}")
 
     def restore(self, checkpoint=None, model_dir=None):
         """Restores this model"""
@@ -1104,7 +1103,7 @@ class NNModelWrapper(ModelWrapper):
         self._clean_up_excess_files(dest_dir)
 
         shutil.copy2(chkpt_file, dest_dir)
-        self.log.info("Saved model files to '%s'" % dest_dir)
+        # self.log.info("Saved model files to '%s'" % dest_dir)
 
 
     # ****************************************************************************************
@@ -2591,6 +2590,9 @@ class MultitaskDCModelWrapper(PytorchDeepChemModelWrapper):
 
                 valid_epoch_perfs (np.array): A standard validation set performance metric (r2_score or roc_auc), at the end of each epoch.
         """
+
+        self.log.info("(MultitaskDC Model) Training with early stopping....")
+
         self.data = pipeline.data
         feature_names = self.data.featurization.get_feature_columns()
         nfeatures = len(feature_names)
@@ -2616,9 +2618,10 @@ class MultitaskDCModelWrapper(PytorchDeepChemModelWrapper):
             train_perf, valid_perf, test_perf = em.update_epoch(ei,
                                 train_dset=train_dset, valid_dset=valid_dset, test_dset=test_dset)
 
-            self.log.info("Epoch %d: training %s = %.3f, validation %s = %.3f, test %s = %.3f" % (
-                          ei, pipeline.metric_type, train_perf, pipeline.metric_type, valid_perf,
-                          pipeline.metric_type, test_perf))
+            if ei % 50 == 0:
+                self.log.info("Epoch %d: training %s = %.3f, validation %s = %.3f, test %s = %.3f" % (
+                            ei, pipeline.metric_type, train_perf, pipeline.metric_type, valid_perf,
+                            pipeline.metric_type, test_perf))
 
             layer1_weights = self.model.model.layers[0].weight
             feature_weights = np.zeros(nfeatures, dtype=float)
@@ -2642,7 +2645,7 @@ class MultitaskDCModelWrapper(PytorchDeepChemModelWrapper):
 
         # Only copy the model files we need, not the entire directory
         self._copy_model(self.best_model_dir)
-        self.log.info(f"Best model from epoch {self.best_epoch} saved to {self.best_model_dir}")
+        self.log.info(f"(MultitaskDCModel) Best model from epoch {self.best_epoch} saved to {self.best_model_dir}")
 
 
     def recreate_model(self, model_dir=None):
